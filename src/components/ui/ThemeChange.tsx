@@ -27,12 +27,15 @@ import {
 import { Palette } from "lucide-react";
 
 export function ThemeChange() {
-  const storedThemeString = localStorage.getItem("ai-form-builder-theme");
-  const selectedTheme = storedThemeString
-    ? JSON.parse(storedThemeString)
-    : slateTheme;
+  const [theme, setTheme] = useState(slateTheme);
 
-  const [theme, setTheme] = useState(selectedTheme);
+  useEffect(() => {
+    const storedThemeString = localStorage.getItem("intelliform-theme");
+    const selectedTheme = storedThemeString
+      ? JSON.parse(storedThemeString)
+      : slateTheme;
+    setTheme(selectedTheme);
+  }, []);
 
   useEffect(() => {
     Object.entries(theme).forEach(([key, value]) => {
@@ -45,29 +48,29 @@ export function ThemeChange() {
   const handleSelectTheme = (selectedTheme: any) => {
     if (selectedTheme === "Slate") {
       setTheme(slateTheme);
-      localStorage.setItem("ai-form-builder-theme", JSON.stringify(slateTheme));
+      localStorage.setItem("intelliform-theme", JSON.stringify(slateTheme));
     } else if (selectedTheme === "Violet") {
       setTheme(violetTheme);
       localStorage.setItem(
-        "ai-form-builder-theme",
+        "intelliform-theme",
         JSON.stringify(violetTheme)
       );
     } else if (selectedTheme === "Red") {
       setTheme(redTheme);
-      localStorage.setItem("ai-form-builder-theme", JSON.stringify(redTheme));
+      localStorage.setItem("intelliform-theme", JSON.stringify(redTheme));
     } else if (selectedTheme == "Blue") {
       setTheme(blueTheme);
-      localStorage.setItem("ai-form-builder-theme", JSON.stringify(blueTheme));
+      localStorage.setItem("intelliform-theme", JSON.stringify(blueTheme));
     } else if (selectedTheme == "Orange") {
       setTheme(orangeTheme);
       localStorage.setItem(
-        "ai-form-builder-theme",
+        "intelliform-theme",
         JSON.stringify(orangeTheme)
       );
     } else if (selectedTheme == "Neutral") {
       setTheme(neutralTheme);
       localStorage.setItem(
-        "ai-form-builder-theme",
+        "intelliform-theme",
         JSON.stringify(neutralTheme)
       );
     }

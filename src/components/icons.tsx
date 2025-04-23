@@ -6,6 +6,7 @@ import {
   Settings,
   UserRoundCog,
   List,
+  BarChart,
   type IconNode as LucideIcon,
 } from "lucide-react";
 
@@ -19,4 +20,5 @@ export const Icons = {
   settings: Settings,
   userRoundCog: UserRoundCog,
   list: List,
+  barChart: BarChart,
 };

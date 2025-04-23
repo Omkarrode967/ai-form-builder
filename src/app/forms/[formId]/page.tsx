@@ -3,6 +3,9 @@ import { db } from "@/db";
 import { forms } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import Form from "../Form";
+import { Button } from "@/components/ui/button";
+import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
 
 const page = async ({
   params,
@@ -32,6 +35,18 @@ const page = async ({
     return <div>Form not found</div>;
   }
 
-  return <Form form={form} />;
+  return (
+    <div>
+      <div className="p-4">
+        <Link href="/view-forms">
+          <Button variant="outline" className="flex items-center gap-2">
+            <ArrowLeft size={16} />
+            Back to My Forms
+          </Button>
+        </Link>
+      </div>
+      <Form form={form} />
+    </div>
+  );
 };
 export default page;

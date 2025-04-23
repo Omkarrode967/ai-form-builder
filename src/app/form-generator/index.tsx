@@ -15,7 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { generateForm } from "@/actions/generateForm";
 import { useFormState, useFormStatus } from "react-dom";
 import { navigate } from "@/actions/navigateToForm";
-
+import { Plus } from "lucide-react";
 import { useSession, signIn } from "next-auth/react";
 
 type Props = {};
@@ -36,7 +36,7 @@ export function SubmitButton() {
   );
 }
 
-const FormGenerator = (props: Props) => {
+export default function FormGenerator(props: Props) {
   const [state, formAction] = useFormState(generateForm, initialState);
   const [open, setOpen] = useState(false);
   const session = useSession();
@@ -46,33 +46,36 @@ const FormGenerator = (props: Props) => {
     if (state?.message == "success") {
       setOpen(false);
       navigate(state.data.formId);
-      // navigate(state.data.formId, "Additional value i am passing");
     }
     console.log(state?.data);
-  }, [state?.message]);
-
-  const onFormCreate = () => {
-    if (session.data?.user) {
-      setOpen(true);
-    } else {
-      signIn();
-    }
-  };
+  }, [state]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <Button onClick={onFormCreate}>Create Form</Button>
+      <DialogTrigger asChild>
+        <Button className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white">
+          <Plus className="mr-2 h-4 w-4" />
+          Create New Form
+        </Button>
+      </DialogTrigger>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle>Create New Form</DialogTitle>
+          <DialogTitle>Create a New Form</DialogTitle>
+          <DialogDescription>
+            Describe what kind of form you want to create, and our AI will generate it for you.
+          </DialogDescription>
         </DialogHeader>
-        <form action={formAction} className="grid gap-4 py-4">
-          <Textarea
-            id="description"
-            name="description"
-            required
-            placeholder="Share what your form is about, who is it for, and what information you would like to collect. And AI will do the rest!"
-          />
+        <form action={formAction}>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Textarea
+                id="description"
+                name="description"
+                placeholder="Describe your form (e.g., 'Create a job application form with fields for name, email, experience, and a resume upload')"
+                className="min-h-[100px]"
+              />
+            </div>
+          </div>
           <DialogFooter>
             <SubmitButton />
           </DialogFooter>
@@ -80,5 +83,4 @@ const FormGenerator = (props: Props) => {
       </DialogContent>
     </Dialog>
   );
-};
-export default FormGenerator;
+}

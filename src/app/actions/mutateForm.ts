@@ -6,11 +6,9 @@ import { auth } from "@/auth";
 import { InferInsertModel, eq } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { getCurrentForm } from "./getUserForms";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-const API_KEY = process.env.GEMINI_API_KEY || "";
+import { HfInference } from '@huggingface/inference';
 
-const genAI = new GoogleGenerativeAI(API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+const hf = new HfInference(process.env.HUGGINGFACE_API_KEY);
 
 type Form = InferInsertModel<typeof forms>;
 type Question = InferInsertModel<typeof dbQuestions>;
@@ -89,53 +87,125 @@ export async function addMoreQuestion(
   allQuestions: string
 ) {
   try {
-    console.log("indside");
-    const user_prompt = `${prompt} Based on the description, generate a survey object with 1 field of "questions" array where every element has 2 fields: text and the fieldType and fieldType can be of these options RadioGroup, Select, Input, Textarea, Switch; and return it in json format. For RadioGroup, and Select types also return fieldOptions array with text and value fields. And questions should 2 in quantity and more importantly the questions does not include these question ${allQuestions}. For example, for RadioGroup, and Select types, the field options array can be [{text: 'Yes', value: 'yes'}, {text: 'No', value: 'no'}] and for Input, Textarea, and Switch types, the field options array can be empty. For example, for Input, Textarea, and Switch types, the field options array can be []`;
-    const result = await model.generateContent(user_prompt);
-    const response = await result.response;
-    const text = response.text();
-    const jsonString = text.replace(/^```json\s*([\s\S]*)\s*```$/g, "$1");
+    if (!process.env.HUGGINGFACE_API_KEY) {
+      throw new Error("Hugging Face API key is not set");
+    }
 
-    const responseObject = JSON.parse(jsonString);
-    console.log("ADDITION QUESTIOS", responseObject);
-
-    const currentForm = await getCurrentForm(formID || "");
-
-    const newQuestions = responseObject.questions.map((question: any) => {
-      return {
-        text: question.text,
-        fieldType: question.fieldType,
-        fieldOptions: question.fieldOptions,
-        formId: id,
-      };
-    });
-
-    const updatedQuestions = [
-      ...(currentForm?.questions || []),
-      ...newQuestions,
-    ];
-
-    await db.transaction(async (tx) => {
-      for (const question of newQuestions) {
-        console.log("questionssssss", question);
-        const [{ questionId }] = await tx
-          .insert(dbQuestions)
-          .values(question)
-          .returning({ questionId: dbQuestions.id });
-        if (question.fieldOptions && question.fieldOptions.length > 0) {
-          await tx.insert(fieldOptions).values(
-            question.fieldOptions.map((option: any) => ({
-              text: option.text,
-              value: option.value,
-              questionId,
-            }))
-          );
+    console.log("Generating additional questions...");
+    const user_prompt = `Create 2 more form questions based on this description: "${prompt}"
+    
+    The questions should NOT include any of these existing questions: ${allQuestions}
+    
+    Generate a JSON object with a "questions" array containing 2 questions, where each question has:
+    - text: The question text
+    - fieldType: One of: RadioGroup, Select, Input, Textarea, Switch
+    - fieldOptions: For RadioGroup and Select types, an array of {text, value} pairs. For other types, an empty array.
+    
+    Example format:
+    {
+      "questions": [
+        {
+          "text": "How satisfied are you with our service?",
+          "fieldType": "RadioGroup",
+          "fieldOptions": [
+            {"text": "Very Satisfied", "value": "very_satisfied"},
+            {"text": "Satisfied", "value": "satisfied"},
+            {"text": "Neutral", "value": "neutral"},
+            {"text": "Dissatisfied", "value": "dissatisfied"}
+          ]
+        },
+        {
+          "text": "Any additional comments?",
+          "fieldType": "Textarea",
+          "fieldOptions": []
         }
+      ]
+    }`;
+    
+    console.log("Sending request to Hugging Face...");
+    const response = await hf.textGeneration({
+      model: 'meta-llama/Llama-2-70b-chat-hf',
+      inputs: user_prompt,
+      parameters: {
+        max_new_tokens: 1000,
+        temperature: 0.7,
+        top_p: 0.95,
+        return_full_text: false
       }
     });
 
-    return updatedQuestions;
+    console.log("Received response from Hugging Face");
+    const text = response.generated_text;
+    console.log("Raw response:", text);
+
+    // Try to extract JSON from the response
+    let jsonString = text;
+    try {
+      // First try to extract JSON from code blocks
+      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if (jsonMatch) {
+        jsonString = jsonMatch[1];
+      }
+      
+      // Clean up the JSON string
+      jsonString = jsonString.trim();
+      if (jsonString.startsWith('{') && jsonString.endsWith('}')) {
+        // Try to parse the JSON
+        const responseObject = JSON.parse(jsonString);
+        console.log("Parsed response object:", responseObject);
+
+        // Validate the response object
+        if (!Array.isArray(responseObject.questions)) {
+          throw new Error("Invalid response format from AI");
+        }
+
+        const currentForm = await getCurrentForm(formID || "");
+
+        const newQuestions = responseObject.questions.map((question: any) => {
+          return {
+            text: question.text,
+            fieldType: question.fieldType,
+            fieldOptions: question.fieldOptions,
+            formId: id,
+          };
+        });
+
+        const updatedQuestions = [
+          ...(currentForm?.questions || []),
+          ...newQuestions,
+        ];
+
+        console.log("Saving new questions to database...");
+        await db.transaction(async (tx) => {
+          for (const question of newQuestions) {
+            console.log("Saving question:", question);
+            const [{ questionId }] = await tx
+              .insert(dbQuestions)
+              .values(question)
+              .returning({ questionId: dbQuestions.id });
+            if (question.fieldOptions && question.fieldOptions.length > 0) {
+              await tx.insert(fieldOptions).values(
+                question.fieldOptions.map((option: any) => ({
+                  text: option.text,
+                  value: option.value,
+                  questionId,
+                }))
+              );
+            }
+          }
+        });
+
+        console.log("Questions saved successfully");
+        return updatedQuestions;
+      } else {
+        throw new Error("Response is not in JSON format");
+      }
+    } catch (jsonError) {
+      console.error("Error parsing AI response:", jsonError);
+      throw new Error("Failed to parse AI response as JSON");
+    }
   } catch (err) {
-    console.log(err);
+    console.error("Error generating additional questions:", err);
+    throw err;
   }
 }

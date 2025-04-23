@@ -32,12 +32,10 @@ import { PlusIcon } from "@radix-ui/react-icons";
 import { db } from "@/db";
 import { InferInsertModel, eq } from "drizzle-orm";
 import { getCurrentForm } from "../actions/getUserForms";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { HfInference } from '@huggingface/inference';
 import { forms, questions as dbQuestions, fieldOptions } from "@/db/schema";
-const API_KEY = process.env.GEMINI_API_KEY || "";
 
-const genAI = new GoogleGenerativeAI(API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+const hf = new HfInference(process.env.HUGGINGFACE_API_KEY);
 
 type Props = {
   form: Form;
@@ -162,25 +160,30 @@ const Form = (props: Props) => {
   const handleAllMoreQuestions = async () => {
     try {
       setAddingNewFields(true);
+      console.log("Adding more questions with prompt:", prompt);
+      console.log("Current form ID:", currentFormId.id);
+      console.log("Current form UUID:", props.form.formID);
+      console.log("Existing questions:", allQuestions);
+      
       const resp = await addMoreQuestion(
         prompt,
         currentFormId.id,
         props.form.formID || "",
         allQuestions.join(",")
       );
+      
       if (resp !== undefined && resp !== null) {
+        console.log("Successfully added new questions:", resp);
         setAllQuestions((prevQuestions) => [...prevQuestions, ...resp]);
         setTotalQuestions(resp.length || 0);
         router.refresh();
-        console.log(resp);
-        console.log("Response:", resp);
       } else {
-        console.log("Response is undefined or null");
+        console.error("Response is undefined or null");
+        alert("Failed to add more questions. Please try again.");
       }
-      // setAllQuestions((prevQuestions) => [...prevQuestions, ...resp]);
-      // setTotalQuestions(resp?.length || 0);
     } catch (err) {
-      console.log(err);
+      console.error("Error adding more questions:", err);
+      alert("An error occurred while adding more questions. Please try again.");
     } finally {
       setAddingNewFields(false);
     }

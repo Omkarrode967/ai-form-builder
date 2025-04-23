@@ -9,29 +9,17 @@ export default function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const dashboardConfig: {
-    sidebarNav: SidebarNavItem[];
-  } = {
+  const dashboardConfig: { sidebarNav: SidebarNavItem[] } = {
     sidebarNav: [
       {
-        title: "My Forms",
-        href: "/view-forms",
+        title: "Dashboard",
+        href: "/",
         icon: "library",
       },
       {
-        title: "Results",
-        href: "/results",
+        title: "Forms",
+        href: "/view-forms",
         icon: "list",
-      },
-      {
-        title: "Analytics",
-        href: "/analytics",
-        icon: "lineChart",
-      },
-      {
-        title: "Charts",
-        href: "/charts",
-        icon: "pieChart",
       },
       {
         title: "Settings",
