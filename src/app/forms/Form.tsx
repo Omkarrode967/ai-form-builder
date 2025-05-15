@@ -32,10 +32,7 @@ import { PlusIcon } from "@radix-ui/react-icons";
 import { db } from "@/db";
 import { InferInsertModel, eq } from "drizzle-orm";
 import { getCurrentForm } from "../actions/getUserForms";
-import { HfInference } from '@huggingface/inference';
 import { forms, questions as dbQuestions, fieldOptions } from "@/db/schema";
-
-const hf = new HfInference(process.env.HUGGINGFACE_API_KEY);
 
 type Props = {
   form: Form;
@@ -53,6 +50,15 @@ interface Form extends FormSelectModel {
 interface AllQuestionModel extends Array<string> {}
 
 type Question = InferInsertModel<typeof dbQuestions>;
+
+interface FormData {
+  description: string;
+  questions: Array<{
+    text: string;
+    fieldType: string;
+    fieldOptions: Array<{ text: string; value: string }>;
+  }>;
+}
 
 const Form = (props: Props) => {
   const [prompt, setPrompt] = useState<string>("");
@@ -157,29 +163,96 @@ const Form = (props: Props) => {
 
   console.log("CURENT FORM", currentFormId);
 
-  const handleAllMoreQuestions = async () => {
+  const handleAddMoreQuestions = async () => {
     try {
       setAddingNewFields(true);
-      console.log("Adding more questions with prompt:", prompt);
-      console.log("Current form ID:", currentFormId.id);
-      console.log("Current form UUID:", props.form.formID);
-      console.log("Existing questions:", allQuestions);
-      
-      const resp = await addMoreQuestion(
-        prompt,
-        currentFormId.id,
-        props.form.formID || "",
-        allQuestions.join(",")
+      if (!process.env.HUGGINGFACE_API_KEY) {
+        throw new Error("Hugging Face API key is not set");
+      }
+
+      const formData = form.getValues() as FormData;
+      const modelUrl = "https://api-inference.huggingface.co/models/gpt2";
+      console.log("Making request to:", modelUrl);
+
+      const response = await fetch(
+        modelUrl,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            inputs: `Create additional form questions based on this description: "${formData.description}". Existing questions: ${JSON.stringify(formData.questions)}. Return a JSON object with questions array.`,
+            parameters: {
+              max_new_tokens: 200,
+              temperature: 0.7,
+              top_p: 0.95,
+              return_full_text: false
+            }
+          })
+        }
       );
-      
-      if (resp !== undefined && resp !== null) {
-        console.log("Successfully added new questions:", resp);
-        setAllQuestions((prevQuestions) => [...prevQuestions, ...resp]);
-        setTotalQuestions(resp.length || 0);
-        router.refresh();
-      } else {
-        console.error("Response is undefined or null");
-        alert("Failed to add more questions. Please try again.");
+
+      console.log("Response status:", response.status);
+      console.log("Response headers:", Object.fromEntries(response.headers.entries()));
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("API Error Response:", {
+          status: response.status,
+          statusText: response.statusText,
+          body: errorText,
+          url: modelUrl
+        });
+        throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+      }
+
+      const result = await response.json();
+      console.log("Received response from Hugging Face");
+      console.log("Response:", result);
+
+      const text = Array.isArray(result) ? result[0].generated_text : result.generated_text || "";
+      console.log("Raw response:", text);
+
+      // Try to extract JSON from the response
+      let jsonString = text;
+      try {
+        // First try to extract JSON from code blocks
+        const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        if (jsonMatch) {
+          jsonString = jsonMatch[1];
+        } else {
+          // If no code blocks, try to find JSON between curly braces
+          const jsonBetweenBraces = text.match(/\{[\s\S]*\}/);
+          if (jsonBetweenBraces) {
+            jsonString = jsonBetweenBraces[0];
+          }
+        }
+        
+        // Clean up the JSON string
+        jsonString = jsonString.trim();
+        // Remove any markdown formatting or explanatory text
+        jsonString = jsonString.replace(/^.*?\{/, '{').replace(/\}.*?$/, '}');
+        
+        if (jsonString.startsWith('{') && jsonString.endsWith('}')) {
+          // Try to parse the JSON
+          const responseObject = JSON.parse(jsonString);
+          console.log("Parsed response object:", responseObject);
+          
+          if (responseObject.questions && Array.isArray(responseObject.questions)) {
+            setAllQuestions((prevQuestions) => [...prevQuestions, ...responseObject.questions]);
+            setTotalQuestions(responseObject.questions.length);
+            router.refresh();
+          } else {
+            throw new Error("Response does not contain valid questions array");
+          }
+        } else {
+          throw new Error("Response is not in JSON format");
+        }
+      } catch (jsonError) {
+        console.error("Error parsing AI response:", jsonError);
+        throw new Error("Failed to parse AI response as JSON");
       }
     } catch (err) {
       console.error("Error adding more questions:", err);
@@ -264,7 +337,7 @@ const Form = (props: Props) => {
           )}
           {editMode && toatalQuestions < 8 && (
             <Button
-              onClick={handleAllMoreQuestions}
+              onClick={handleAddMoreQuestions}
               type="button"
               variant="outline"
               disabled={addingNewFields}

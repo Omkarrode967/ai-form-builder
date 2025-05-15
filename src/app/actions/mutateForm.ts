@@ -6,9 +6,10 @@ import { auth } from "@/auth";
 import { InferInsertModel, eq } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { getCurrentForm } from "./getUserForms";
-import { HfInference } from '@huggingface/inference';
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const hf = new HfInference(process.env.HUGGINGFACE_API_KEY);
+// Initialize Gemini client
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 type Form = InferInsertModel<typeof forms>;
 type Question = InferInsertModel<typeof dbQuestions>;
@@ -87,70 +88,50 @@ export async function addMoreQuestion(
   allQuestions: string
 ) {
   try {
-    if (!process.env.HUGGINGFACE_API_KEY) {
-      throw new Error("Hugging Face API key is not set");
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error("Gemini API key is not set");
     }
 
-    console.log("Generating additional questions...");
-    const user_prompt = `Create 2 more form questions based on this description: "${prompt}"
-    
-    The questions should NOT include any of these existing questions: ${allQuestions}
-    
-    Generate a JSON object with a "questions" array containing 2 questions, where each question has:
-    - text: The question text
-    - fieldType: One of: RadioGroup, Select, Input, Textarea, Switch
-    - fieldOptions: For RadioGroup and Select types, an array of {text, value} pairs. For other types, an empty array.
-    
-    Example format:
-    {
-      "questions": [
-        {
-          "text": "How satisfied are you with our service?",
-          "fieldType": "RadioGroup",
-          "fieldOptions": [
-            {"text": "Very Satisfied", "value": "very_satisfied"},
-            {"text": "Satisfied", "value": "satisfied"},
-            {"text": "Neutral", "value": "neutral"},
-            {"text": "Dissatisfied", "value": "dissatisfied"}
-          ]
-        },
-        {
-          "text": "Any additional comments?",
-          "fieldType": "Textarea",
-          "fieldOptions": []
-        }
-      ]
-    }`;
-    
-    console.log("Sending request to Hugging Face...");
-    const response = await hf.textGeneration({
-      model: 'meta-llama/Llama-2-70b-chat-hf',
-      inputs: user_prompt,
-      parameters: {
-        max_new_tokens: 1000,
-        temperature: 0.7,
-        top_p: 0.95,
-        return_full_text: false
-      }
-    });
+    console.log("Adding more questions with prompt:", prompt);
+    console.log("Current form ID:", id);
+    console.log("Current form UUID:", formID);
+    console.log("Existing questions:", allQuestions);
 
-    console.log("Received response from Hugging Face");
-    const text = response.generated_text;
-    console.log("Raw response:", text);
-
-    // Try to extract JSON from the response
-    let jsonString = text;
+    console.log("Sending request to Gemini...");
     try {
-      // First try to extract JSON from code blocks
-      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-      if (jsonMatch) {
-        jsonString = jsonMatch[1];
-      }
+      console.log("Initializing Gemini request...");
       
-      // Clean up the JSON string
-      jsonString = jsonString.trim();
+      // Get the generative model with proper configuration
+      const model = genAI.getGenerativeModel({ 
+        model: "gemini-pro",
+        generationConfig: {
+          temperature: 0.7,
+          topP: 0.95,
+          topK: 40,
+        },
+      });
+
+      // Generate content
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const text = response.text();
+      
+      console.log("Raw response:", text);
+
+      // Try to extract JSON from the response
+      let jsonString = text.trim();
+      
+      // Remove any markdown code block indicators
+      jsonString = jsonString.replace(/```json\n?|\n?```/g, '');
+      
+      // Remove any leading/trailing text that's not part of the JSON
+      const jsonStart = jsonString.indexOf('{');
+      const jsonEnd = jsonString.lastIndexOf('}') + 1;
+      if (jsonStart >= 0 && jsonEnd > jsonStart) {
+        jsonString = jsonString.substring(jsonStart, jsonEnd);
+      }
+
       if (jsonString.startsWith('{') && jsonString.endsWith('}')) {
-        // Try to parse the JSON
         const responseObject = JSON.parse(jsonString);
         console.log("Parsed response object:", responseObject);
 
@@ -159,53 +140,52 @@ export async function addMoreQuestion(
           throw new Error("Invalid response format from AI");
         }
 
-        const currentForm = await getCurrentForm(formID || "");
+        // Validate field types
+        const validFieldTypes = ["RadioGroup", "Select", "Input", "Textarea", "Switch"];
+        for (const question of responseObject.questions) {
+          if (!validFieldTypes.includes(question.fieldType)) {
+            question.fieldType = "Input"; // Default to Input if invalid type
+          }
+        }
 
-        const newQuestions = responseObject.questions.map((question: any) => {
-          return {
-            text: question.text,
-            fieldType: question.fieldType,
-            fieldOptions: question.fieldOptions,
-            formId: id,
-          };
-        });
+        // Save the new questions to the database
+        const newQuestions = responseObject.questions;
+        for (const question of newQuestions) {
+          const [{ questionId }] = await db
+            .insert(dbQuestions)
+            .values({
+              formId: id,
+              text: question.text,
+              fieldType: question.fieldType,
+            })
+            .returning({
+              questionId: dbQuestions.id,
+            });
 
-        const updatedQuestions = [
-          ...(currentForm?.questions || []),
-          ...newQuestions,
-        ];
-
-        console.log("Saving new questions to database...");
-        await db.transaction(async (tx) => {
-          for (const question of newQuestions) {
-            console.log("Saving question:", question);
-            const [{ questionId }] = await tx
-              .insert(dbQuestions)
-              .values(question)
-              .returning({ questionId: dbQuestions.id });
-            if (question.fieldOptions && question.fieldOptions.length > 0) {
-              await tx.insert(fieldOptions).values(
-                question.fieldOptions.map((option: any) => ({
-                  text: option.text,
-                  value: option.value,
-                  questionId,
-                }))
-              );
+          if (question.fieldOptions && question.fieldOptions.length > 0) {
+            for (const option of question.fieldOptions) {
+              await db.insert(fieldOptions).values({
+                questionId,
+                text: option.text,
+                value: option.value,
+              });
             }
           }
-        });
+        }
 
-        console.log("Questions saved successfully");
-        return updatedQuestions;
+        return {
+          message: "success",
+          questions: newQuestions,
+        };
       } else {
         throw new Error("Response is not in JSON format");
       }
-    } catch (jsonError) {
-      console.error("Error parsing AI response:", jsonError);
-      throw new Error("Failed to parse AI response as JSON");
+    } catch (error) {
+      console.error("Error adding more questions:", error);
+      throw error;
     }
-  } catch (err) {
-    console.error("Error generating additional questions:", err);
-    throw err;
+  } catch (error) {
+    console.error("Error adding more questions:", error);
+    throw error;
   }
 }

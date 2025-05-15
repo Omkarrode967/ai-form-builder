@@ -4,9 +4,18 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { saveForm } from "./mutateForm";
 import { v4 as uuidv4 } from "uuid";
-import { HfInference } from '@huggingface/inference';
+import { CohereClient } from "cohere-ai";
 
-const hf = new HfInference(process.env.HUGGINGFACE_API_KEY);
+// Initialize Cohere client
+const cohere = new CohereClient({
+  token: process.env.COHERE_API_KEY || "",
+});
+
+// Add debug logging
+console.log("Environment variables check:");
+console.log("COHERE_API_KEY exists:", !!process.env.COHERE_API_KEY);
+console.log("NODE_ENV:", process.env.NODE_ENV);
+console.log("Using API endpoint:", process.env.GOOGLE_API_ENDPOINT || "https://generativelanguage.googleapis.com/v1");
 
 export async function generateForm(
   prevState: {
@@ -14,6 +23,14 @@ export async function generateForm(
   },
   formData: FormData
 ) {
+  console.log("Starting form generation process...");
+  
+  // Debug environment variables
+  console.log("Environment Variables Debug:");
+  console.log("NODE_ENV:", process.env.NODE_ENV);
+  console.log("All env keys:", Object.keys(process.env));
+  console.log("COHERE_API_KEY exists:", !!process.env.COHERE_API_KEY);
+  
   const schema = z.object({
     description: z.string().min(1),
   });
@@ -22,7 +39,7 @@ export async function generateForm(
   });
 
   if (!parse.success) {
-    console.log(parse.error);
+    console.log("Schema validation failed:", parse.error);
     return {
       message: "Failed to parse data",
     };
@@ -32,8 +49,11 @@ export async function generateForm(
   console.log("Form description:", data.description);
 
   try {
-    if (!process.env.HUGGINGFACE_API_KEY) {
-      throw new Error("Hugging Face API key is not set");
+    console.log("Checking environment variables...");
+    console.log("COHERE_API_KEY exists:", !!process.env.COHERE_API_KEY);
+    
+    if (!process.env.COHERE_API_KEY) {
+      throw new Error("Cohere API key is not set");
     }
 
     console.log("Generating form with AI...");
@@ -72,86 +92,49 @@ export async function generateForm(
       ]
     }`;
     
-    console.log("Sending request to Hugging Face...");
-    const response = await hf.textGeneration({
-      model: 'mistralai/Mistral-7B-Instruct-v0.2',
-      inputs: prompt,
-      parameters: {
-        max_new_tokens: 1000,
-        temperature: 0.7,
-        top_p: 0.95,
-        return_full_text: false
-      }
-    }).catch(error => {
-      if (error.message.includes("Pro subscription")) {
-        throw new Error("This model requires a Hugging Face Pro subscription. Please upgrade your account at hf.co/pricing");
-      }
-      throw error;
-    });
-
-    console.log("Received response from Hugging Face");
-    const text = response.generated_text;
-    console.log("Raw response:", text);
-
-    // Try to extract JSON from the response
-    let jsonString = text;
+    console.log("Sending request to Cohere...");
     try {
-      // First try to extract JSON from code blocks
-      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-      if (jsonMatch) {
-        jsonString = jsonMatch[1];
-      } else {
-        // If no code blocks, try to find JSON between curly braces
-        const jsonBetweenBraces = text.match(/\{[\s\S]*\}/);
-        if (jsonBetweenBraces) {
-          jsonString = jsonBetweenBraces[0];
+      console.log("Initializing Cohere request...");
+      
+      // Generate content using Cohere
+      const response = await cohere.chat({
+        model: 'command-xlarge-nightly',
+        message: prompt,
+        temperature: 0.7,
+        k: 0,
+        p: 0.9
+      });
+      
+      const text = response.text;
+      console.log("Raw response:", text);
+      
+      // Estimate token usage (rough estimate: 1 token ≈ 4 characters)
+      const estimatedPromptTokens = Math.ceil(prompt.length / 4);
+      const estimatedResponseTokens = Math.ceil(text.length / 4);
+      const estimatedTotalTokens = estimatedPromptTokens + estimatedResponseTokens;
+      
+      console.log("Estimated Token Usage:", {
+        promptTokens: estimatedPromptTokens,
+        responseTokens: estimatedResponseTokens,
+        totalTokens: estimatedTotalTokens,
+        remainingTokens: 5000 - estimatedTotalTokens // Approximate remaining tokens
+      });
+
+      // Process the response
+      return processResponse(text, data.description);
+    } catch (error: unknown) {
+      console.error("Error generating form:", error);
+      
+      if (error instanceof Error) {
+        if (error.message.includes('API key')) {
+          throw new Error("Invalid API key. Please check your Cohere API key");
+        }
+        if (error.message.includes('quota')) {
+          throw new Error("API quota exceeded. Please try again later.");
         }
       }
       
-      // Clean up the JSON string
-      jsonString = jsonString.trim();
-      // Remove any markdown formatting or explanatory text
-      jsonString = jsonString.replace(/^.*?\{/, '{').replace(/\}.*?$/, '}');
-      
-      if (jsonString.startsWith('{') && jsonString.endsWith('}')) {
-        // Try to parse the JSON
-        const responseObject = JSON.parse(jsonString);
-        console.log("Parsed response object:", responseObject);
-
-        // Validate the response object
-        if (!responseObject.name || !responseObject.description || !Array.isArray(responseObject.questions)) {
-          throw new Error("Invalid response format from AI");
-        }
-
-        // Validate field types
-        const validFieldTypes = ["RadioGroup", "Select", "Input", "Textarea", "Switch"];
-        for (const question of responseObject.questions) {
-          if (!validFieldTypes.includes(question.fieldType)) {
-            question.fieldType = "Input"; // Default to Input if invalid type
-          }
-        }
-
-        console.log("Saving form to database...");
-        const dbFormId = await saveForm({
-          user_prompt: data.description,
-          name: responseObject.name,
-          description: responseObject.description,
-          questions: responseObject.questions,
-        });
-
-        console.log("Form saved with ID:", dbFormId);
-
-        revalidatePath("/");
-        return {
-          message: "success",
-          data: { formId: dbFormId },
-        };
-      } else {
-        throw new Error("Response is not in JSON format");
-      }
-    } catch (jsonError) {
-      console.error("Error parsing AI response:", jsonError);
-      throw new Error("Failed to parse AI response as JSON");
+      throw error;
     }
   } catch (err) {
     console.error("Error generating form:", err);
@@ -159,5 +142,63 @@ export async function generateForm(
       message: "Failed to create form",
       error: err instanceof Error ? err.message : "Unknown error",
     };
+  }
+}
+
+// Helper function to process the response
+async function processResponse(text: string, description: string) {
+  try {
+    // Clean up the response text to ensure it's valid JSON
+    let jsonString = text.trim();
+    
+    // Remove any markdown code block indicators
+    jsonString = jsonString.replace(/```json\n?|\n?```/g, '');
+    
+    // Remove any leading/trailing text that's not part of the JSON
+    const jsonStart = jsonString.indexOf('{');
+    const jsonEnd = jsonString.lastIndexOf('}') + 1;
+    if (jsonStart >= 0 && jsonEnd > jsonStart) {
+      jsonString = jsonString.substring(jsonStart, jsonEnd);
+    }
+    
+    if (jsonString.startsWith('{') && jsonString.endsWith('}')) {
+      // Try to parse the JSON
+      const responseObject = JSON.parse(jsonString);
+      console.log("Parsed response object:", responseObject);
+
+      // Validate the response object
+      if (!responseObject.name || !responseObject.description || !Array.isArray(responseObject.questions)) {
+        throw new Error("Invalid response format from AI");
+      }
+
+      // Validate field types
+      const validFieldTypes = ["RadioGroup", "Select", "Input", "Textarea", "Switch"];
+      for (const question of responseObject.questions) {
+        if (!validFieldTypes.includes(question.fieldType)) {
+          question.fieldType = "Input"; // Default to Input if invalid type
+        }
+      }
+
+      console.log("Saving form to database...");
+      const dbFormId = await saveForm({
+        user_prompt: description,
+        name: responseObject.name,
+        description: responseObject.description,
+        questions: responseObject.questions,
+      });
+
+      console.log("Form saved with ID:", dbFormId);
+
+      revalidatePath("/");
+      return {
+        message: "success",
+        data: { formId: dbFormId },
+      };
+    } else {
+      throw new Error("Response is not in JSON format");
+    }
+  } catch (jsonError) {
+    console.error("Error parsing AI response:", jsonError);
+    throw new Error("Failed to parse AI response as JSON");
   }
 }
